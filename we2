@@ -1,0 +1,1337 @@
+-- Enhanced Orion Library with Music System and Customization
+-- Horizontal/Vertical tabs, Size controls, Music panel support
+
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local SoundService = game:GetService("SoundService")
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+local HttpService = game:GetService("HttpService")
+
+-- Configuration
+local Config = {
+    Horizontal = true, -- Tab orientation
+    XSize = 615, -- Window width
+    YSize = 344, -- Window height
+    Music = false, -- Music panel enable/disable
+    SoundList = {
+        -- Format: {name = "Display Name", id = "soundId"}
+        {name = "Chill Beat", id = "142376088"},
+        {name = "Epic Theme", id = "131961136"},
+        {name = "Ambient", id = "168614673"},
+        {name = "Lofi Hip Hop", id = "1838457362"},
+        {name = "Synthwave", id = "1845756489"}
+    }
+}
+
+-- UISizeConstraint güvenlik fonksiyonu
+local function SafeUISizeConstraint(parent, minX, minY, maxX, maxY)
+    if maxX < minX then maxX = minX end
+    if maxY < minY then maxY = minY end
+    
+    local constraint = Instance.new("UISizeConstraint")
+    constraint.MinSize = Vector2.new(minX, minY)
+    constraint.MaxSize = Vector2.new(maxX, maxY)
+    constraint.Parent = parent
+    return constraint
+end
+
+-- Executor compatibility
+local EXECUTOR_CHECK = {}
+EXECUTOR_CHECK.executor = (function()
+    local success, result = pcall(function()
+        return identifyexecutor and identifyexecutor() or "Unknown"
+    end)
+    return success and result or "Unknown"
+end)()
+
+EXECUTOR_CHECK.functions = {
+    isfolder = isfolder or function(path) return false end,
+    makefolder = makefolder or function(path) return end,
+    isfile = isfile or function(path) return false end,
+    writefile = writefile or function(path, content) return end,
+    readfile = readfile or function(path) return "" end,
+    httpget = game.HttpGet or function(self, url) return "" end
+}
+
+-- Core API güvenli erişim
+local function GetCoreGui()
+    local success, result = pcall(function()
+        return game:GetService("CoreGui") or 
+               gethui() or 
+               game.CoreGui or
+               game:GetService("Players").LocalPlayer.PlayerGui
+    end)
+    
+    if success and result then 
+        return result 
+    else
+        return game:GetService("Players").LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    end
+end
+
+getgenv = getgenv or function() return _G end
+syn = syn or {}
+syn.protect_gui = syn.protect_gui or function(gui) end
+
+-- Ana kütüphane
+local OrionLib = {
+    Elements = {},
+    ThemeObjects = {},
+    Connections = {},
+    Flags = {},
+    Config = Config,
+    MusicSystem = {
+        currentSound = nil,
+        soundList = Config.SoundList,
+        isPlaying = false,
+        currentTrack = nil,
+        volume = 0.5
+    },
+    Themes = {
+        Default = {
+            Main = Color3.fromRGB(18, 18, 18),
+            Second = Color3.fromRGB(25, 25, 25),
+            Stroke = Color3.fromRGB(50, 50, 50),
+            Divider = Color3.fromRGB(50, 50, 50),
+            Text = Color3.fromRGB(240, 240, 240),
+            TextDark = Color3.fromRGB(140, 140, 140)
+        }
+    },
+    SelectedTheme = "Default",
+    Folder = nil,
+    SaveCfg = false
+}
+
+-- Music System Functions
+function OrionLib.MusicSystem:PlaySound(soundId, soundName)
+    -- Stop current sound
+    if self.currentSound then
+        self.currentSound:Stop()
+        self.currentSound:Destroy()
+    end
+    
+    -- Create new sound
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://" .. soundId
+    sound.Volume = self.volume
+    sound.Looped = true
+    sound.Parent = SoundService
+    
+    -- Play sound
+    sound:Play()
+    
+    -- Update state
+    self.currentSound = sound
+    self.isPlaying = true
+    self.currentTrack = soundName
+    
+    print("Now playing:", soundName)
+end
+
+function OrionLib.MusicSystem:PauseSound()
+    if self.currentSound then
+        self.currentSound:Pause()
+        self.isPlaying = false
+        print("Music paused")
+    end
+end
+
+function OrionLib.MusicSystem:ResumeSound()
+    if self.currentSound then
+        self.currentSound:Resume()
+        self.isPlaying = true
+        print("Music resumed")
+    end
+end
+
+function OrionLib.MusicSystem:StopSound()
+    if self.currentSound then
+        self.currentSound:Stop()
+        self.currentSound:Destroy()
+        self.currentSound = nil
+        self.isPlaying = false
+        self.currentTrack = nil
+        print("Music stopped")
+    end
+end
+
+function OrionLib.MusicSystem:SetVolume(volume)
+    self.volume = math.clamp(volume, 0, 1)
+    if self.currentSound then
+        self.currentSound.Volume = self.volume
+    end
+end
+
+-- GUI Ana Yapı
+local Orion = Instance.new("ScreenGui")
+Orion.Name = "KanistayLib"
+Orion.ResetOnSpawn = false
+Orion.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+Orion.DisplayOrder = 999999999
+
+local function SafePlaceGui(gui)
+    pcall(function()
+        if syn and syn.protect_gui then
+            syn.protect_gui(gui)
+            gui.Parent = GetCoreGui()
+        elseif gethui then
+            gui.Parent = gethui()
+        else
+            gui.Parent = GetCoreGui()
+        end
+    end)
+    
+    if not gui.Parent then
+        gui.Parent = LocalPlayer.PlayerGui
+    end
+    
+    gui:GetPropertyChangedSignal("Parent"):Connect(function()
+        if not gui.Parent then
+            pcall(function() SafePlaceGui(gui) end)
+        end
+    end)
+    
+    pcall(function()
+        for _, Interface in ipairs(gui.Parent:GetChildren()) do
+            if Interface.Name == gui.Name and Interface ~= gui then
+                Interface:Destroy()
+            end
+        end
+    end)
+end
+
+SafePlaceGui(Orion)
+
+-- Utility Functions
+local function Create(Name, Properties, Children)
+    local Object = Instance.new(Name)
+    for i, v in next, Properties or {} do
+        Object[i] = v
+    end
+    for i, v in next, Children or {} do
+        v.Parent = Object
+    end
+    return Object
+end
+
+local function MakeElement(ElementName, ...)
+    if ElementName == "Corner" then
+        return Create("UICorner", {CornerRadius = UDim.new(0, 6)})
+    elseif ElementName == "Stroke" then
+        return Create("UIStroke", {Thickness = 1})
+    elseif ElementName == "List" then
+        return Create("UIListLayout", {
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            Padding = UDim.new(0, 4)
+        })
+    elseif ElementName == "VerticalList" then
+        return Create("UIListLayout", {
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            FillDirection = Enum.FillDirection.Vertical,
+            Padding = UDim.new(0, 4)
+        })
+    elseif ElementName == "HorizontalList" then
+        return Create("UIListLayout", {
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            FillDirection = Enum.FillDirection.Horizontal,
+            Padding = UDim.new(0, 4)
+        })
+    elseif ElementName == "Padding" then
+        local Padding = Create("UIPadding", {
+            PaddingBottom = UDim.new(0, 4),
+            PaddingLeft = UDim.new(0, 4),
+            PaddingRight = UDim.new(0, 4),
+            PaddingTop = UDim.new(0, 4)
+        })
+        if #{...} > 0 then Padding.PaddingTop = UDim.new(0, ({...})[1]) end
+        if #{...} > 1 then Padding.PaddingRight = UDim.new(0, ({...})[2]) end
+        if #{...} > 2 then Padding.PaddingBottom = UDim.new(0, ({...})[3]) end
+        if #{...} > 3 then Padding.PaddingLeft = UDim.new(0, ({...})[4]) end
+        return Padding
+    elseif ElementName == "TFrame" then
+        return Create("Frame", {BackgroundTransparency = 1})
+    elseif ElementName == "RoundFrame" then
+        local Frame = Create("Frame", {
+            BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+            BorderSizePixel = 0
+        })
+        local Corner = Create("UICorner", {CornerRadius = UDim.new(0, 12)})
+        Corner.Parent = Frame
+        SafeUISizeConstraint(Frame, 0, 0, 10000, 10000)
+        return Frame
+    elseif ElementName == "Button" then
+        return Create("TextButton", {
+            Text = "",
+            AutoButtonColor = false,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0
+        })
+    elseif ElementName == "ScrollFrame" then
+        local ScrollFrame = Create("ScrollingFrame", {
+            BackgroundTransparency = 1,
+            MidImage = "rbxassetid://7445543667",
+            BottomImage = "rbxassetid://7445543667",
+            TopImage = "rbxassetid://7445543667",
+            ScrollBarImageColor3 = ({...})[1],
+            BorderSizePixel = 0,
+            ScrollBarThickness = ({...})[2],
+            CanvasSize = UDim2.new(0, 0, 0, 0)
+        })
+        SafeUISizeConstraint(ScrollFrame, 0, 0, 10000, 10000)
+        return ScrollFrame
+    elseif ElementName == "Label" then
+        local Label = Create("TextLabel", {
+            Text = ({...})[1] or "",
+            TextColor3 = Color3.fromRGB(240, 240, 240),
+            TextTransparency = ({...})[3] or 0,
+            TextSize = ({...})[2] or 15,
+            Font = Enum.Font.Gotham,
+            RichText = true,
+            BackgroundTransparency = 1,
+            TextXAlignment = Enum.TextXAlignment.Left
+        })
+        SafeUISizeConstraint(Label, 0, 0, 10000, 10000)
+        return Label
+    elseif ElementName == "Image" then
+        return Create("ImageLabel", {
+            Image = ({...})[1],
+            BackgroundTransparency = 1
+        })
+    else
+        return Create("Frame", {
+            BackgroundTransparency = 1,
+            Size = UDim2.new(0, 0, 0, 0)
+        })
+    end
+end
+
+local function AddThemeObject(Object, Type)
+    if not OrionLib.ThemeObjects[Type] then
+        OrionLib.ThemeObjects[Type] = {}
+    end    
+    table.insert(OrionLib.ThemeObjects[Type], Object)
+    local function getProperty(obj)
+        if obj:IsA("Frame") or obj:IsA("TextButton") then return "BackgroundColor3" end
+        if obj:IsA("UIStroke") then return "Color" end
+        if obj:IsA("TextLabel") or obj:IsA("TextBox") then return "TextColor3" end
+        if obj:IsA("ImageLabel") or obj:IsA("ImageButton") then return "ImageColor3" end
+        return "BackgroundColor3"
+    end
+    Object[getProperty(Object)] = OrionLib.Themes[OrionLib.SelectedTheme][Type]
+    return Object
+end
+
+local function AddConnection(Signal, Function)
+    local Connection = Signal:Connect(Function)
+    table.insert(OrionLib.Connections, Connection)
+    return Connection
+end
+
+local function AddDraggingFunctionality(DragPoint, Main)
+    local Dragging, MousePos, FramePos = false, nil, nil
+    
+    local function BeginDrag(Input)
+        if Input.UserInputType == Enum.UserInputType.MouseButton1 then
+            Dragging = true
+            MousePos = Input.Position
+            FramePos = Main.Position
+            
+            Input.Changed:Connect(function()
+                if Input.UserInputState == Enum.UserInputState.End then
+                    Dragging = false
+                end
+            end)
+        end
+    end
+    
+    local function UpdateDrag(Input)
+        if Dragging and Input.UserInputType == Enum.UserInputType.MouseMovement then
+            local Delta = Input.Position - MousePos
+            Main.Position = UDim2.new(FramePos.X.Scale, FramePos.X.Offset + Delta.X, FramePos.Y.Scale, FramePos.Y.Offset + Delta.Y)
+        end
+    end
+    
+    DragPoint.InputBegan:Connect(BeginDrag)
+    UserInputService.InputChanged:Connect(UpdateDrag)
+end
+
+-- Music Panel Creation
+local function CreateMusicPanel(MainWindow)
+    local MusicPanel = Create("Frame", {
+        Name = "MusicPanel",
+        Size = UDim2.new(0, 220, 0, 300),
+        Position = UDim2.new(1, 10, 0, 0),
+        BackgroundColor3 = Color3.fromRGB(20, 20, 20),
+        BorderSizePixel = 0,
+        Visible = false,
+        ZIndex = 100,
+        Parent = MainWindow
+    })
+    
+    local Corner = Create("UICorner", {CornerRadius = UDim.new(0, 8)})
+    Corner.Parent = MusicPanel
+    
+    local Stroke = Create("UIStroke", {
+        Color = Color3.fromRGB(80, 80, 80),
+        Thickness = 1
+    })
+    Stroke.Parent = MusicPanel
+    
+    -- Title
+    local Title = Create("TextLabel", {
+        Text = "Music Player",
+        Size = UDim2.new(1, -30, 0, 25),
+        Position = UDim2.new(0, 10, 0, 5),
+        BackgroundTransparency = 1,
+        TextColor3 = Color3.fromRGB(255, 255, 255),
+        Font = Enum.Font.GothamBold,
+        TextSize = 14,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = MusicPanel
+    })
+    
+    -- Close Button
+    local CloseBtn = Create("TextButton", {
+        Text = "×",
+        Size = UDim2.new(0, 20, 0, 20),
+        Position = UDim2.new(1, -25, 0, 5),
+        BackgroundColor3 = Color3.fromRGB(200, 50, 50),
+        TextColor3 = Color3.fromRGB(255, 255, 255),
+        Font = Enum.Font.GothamBold,
+        TextSize = 16,
+        BorderSizePixel = 0,
+        Parent = MusicPanel
+    })
+    
+    local CloseCorner = Create("UICorner", {CornerRadius = UDim.new(0, 4)})
+    CloseCorner.Parent = CloseBtn
+    
+    -- Volume Slider
+    local VolumeContainer = Create("Frame", {
+        Size = UDim2.new(1, -20, 0, 30),
+        Position = UDim2.new(0, 10, 0, 35),
+        BackgroundColor3 = Color3.fromRGB(15, 15, 15),
+        BorderSizePixel = 0,
+        Parent = MusicPanel
+    })
+    
+    local VolumeCorner = Create("UICorner", {CornerRadius = UDim.new(0, 6)})
+    VolumeCorner.Parent = VolumeContainer
+    
+    local VolumeLabel = Create("TextLabel", {
+        Text = "Volume: 50%",
+        Size = UDim2.new(0.4, 0, 1, 0),
+        Position = UDim2.new(0, 8, 0, 0),
+        BackgroundTransparency = 1,
+        TextColor3 = Color3.fromRGB(220, 220, 220),
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = VolumeContainer
+    })
+    
+    local VolumeSliderBar = Create("Frame", {
+        Size = UDim2.new(0.5, 0, 0, 4),
+        Position = UDim2.new(0.45, 0, 0.5, -2),
+        BackgroundColor3 = Color3.fromRGB(60, 60, 60),
+        BorderSizePixel = 0,
+        Parent = VolumeContainer
+    })
+    
+    local VolumeBarCorner = Create("UICorner", {CornerRadius = UDim.new(0, 2)})
+    VolumeBarCorner.Parent = VolumeSliderBar
+    
+    local VolumeFill = Create("Frame", {
+        Size = UDim2.new(0.5, 0, 1, 0),
+        Position = UDim2.new(0, 0, 0, 0),
+        BackgroundColor3 = Color3.fromRGB(100, 200, 255),
+        BorderSizePixel = 0,
+        Parent = VolumeSliderBar
+    })
+    
+    local VolumeFillCorner = Create("UICorner", {CornerRadius = UDim.new(0, 2)})
+    VolumeFillCorner.Parent = VolumeFill
+    
+    local VolumeKnob = Create("Frame", {
+        Size = UDim2.new(0, 12, 0, 12),
+        Position = UDim2.new(0.5, -6, 0.5, -6),
+        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        BorderSizePixel = 0,
+        Parent = VolumeSliderBar
+    })
+    
+    local VolumeKnobCorner = Create("UICorner", {CornerRadius = UDim.new(1, 0)})
+    VolumeKnobCorner.Parent = VolumeKnob
+    
+    -- Volume slider functionality
+    local draggingVolume = false
+    
+    VolumeKnob.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingVolume = true
+        end
+    end)
+    
+    VolumeKnob.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            draggingVolume = false
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if draggingVolume and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local abs = VolumeSliderBar.AbsolutePosition
+            local size = VolumeSliderBar.AbsoluteSize.X
+            local rel = math.clamp((input.Position.X - abs.X) / size, 0, 1)
+            
+            VolumeKnob.Position = UDim2.new(rel, -6, 0.5, -6)
+            VolumeFill.Size = UDim2.new(rel, 0, 1, 0)
+            
+            local volumePercent = math.floor(rel * 100)
+            VolumeLabel.Text = "Volume: " .. volumePercent .. "%"
+            
+            OrionLib.MusicSystem:SetVolume(rel)
+        end
+    end)
+    
+    -- Sound List Container
+    local SoundListContainer = Create("ScrollingFrame", {
+        Size = UDim2.new(1, -20, 0, 150),
+        Position = UDim2.new(0, 10, 0, 75),
+        BackgroundColor3 = Color3.fromRGB(15, 15, 15),
+        BorderSizePixel = 0,
+        ScrollBarThickness = 4,
+        Parent = MusicPanel
+    })
+    
+    local ListCorner = Create("UICorner", {CornerRadius = UDim.new(0, 6)})
+    ListCorner.Parent = SoundListContainer
+    
+    local ListLayout = Create("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 2),
+        Parent = SoundListContainer
+    })
+    
+    -- Control Buttons Container
+    local ControlsContainer = Create("Frame", {
+        Size = UDim2.new(1, -20, 0, 40),
+        Position = UDim2.new(0, 10, 0, 235),
+        BackgroundTransparency = 1,
+        Parent = MusicPanel
+    })
+    
+    local ControlsLayout = Create("UIListLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        FillDirection = Enum.FillDirection.Horizontal,
+        Padding = UDim.new(0, 5),
+        Parent = ControlsContainer
+    })
+    
+    -- Control Buttons
+    local function CreateControlButton(text, color, callback)
+        local button = Create("TextButton", {
+            Text = text,
+            Size = UDim2.new(0, 60, 0, 25),
+            BackgroundColor3 = color,
+            TextColor3 = Color3.fromRGB(255, 255, 255),
+            Font = Enum.Font.GothamBold,
+            TextSize = 12,
+            BorderSizePixel = 0,
+            Parent = ControlsContainer
+        })
+        
+        local btnCorner = Create("UICorner", {CornerRadius = UDim.new(0, 4)})
+        btnCorner.Parent = button
+        
+        button.MouseButton1Click:Connect(callback)
+        return button
+    end
+    
+    local PlayBtn = CreateControlButton("Play", Color3.fromRGB(50, 200, 50), function()
+        if OrionLib.MusicSystem.currentSound and not OrionLib.MusicSystem.isPlaying then
+            OrionLib.MusicSystem:ResumeSound()
+        end
+    end)
+    
+    local PauseBtn = CreateControlButton("Pause", Color3.fromRGB(200, 150, 50), function()
+        OrionLib.MusicSystem:PauseSound()
+    end)
+    
+    local StopBtn = CreateControlButton("Stop", Color3.fromRGB(200, 50, 50), function()
+        OrionLib.MusicSystem:StopSound()
+    end)
+    
+    -- Current Track Display
+    local CurrentTrack = Create("TextLabel", {
+        Text = "No track selected",
+        Size = UDim2.new(1, -20, 0, 20),
+        Position = UDim2.new(0, 10, 0, 280),
+        BackgroundTransparency = 1,
+        TextColor3 = Color3.fromRGB(180, 180, 180),
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        Parent = MusicPanel
+    })
+    
+    -- Populate sound list
+    for i, sound in ipairs(OrionLib.MusicSystem.soundList) do
+        local SoundItem = Create("TextButton", {
+            Text = sound.name,
+            Size = UDim2.new(1, -10, 0, 25),
+            BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+            TextColor3 = Color3.fromRGB(220, 220, 220),
+            Font = Enum.Font.Gotham,
+            TextSize = 12,
+            BorderSizePixel = 0,
+            Parent = SoundListContainer
+        })
+        
+        local ItemCorner = Create("UICorner", {CornerRadius = UDim.new(0, 4)})
+        ItemCorner.Parent = SoundItem
+        
+        SoundItem.MouseButton1Click:Connect(function()
+            OrionLib.MusicSystem:PlaySound(sound.id, sound.name)
+            CurrentTrack.Text = "Playing: " .. sound.name
+        end)
+        
+        SoundItem.MouseEnter:Connect(function()
+            TweenService:Create(SoundItem, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(50, 50, 50)}):Play()
+        end)
+        
+        SoundItem.MouseLeave:Connect(function()
+            TweenService:Create(SoundItem, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(30, 30, 30)}):Play()
+        end)
+    end
+    
+    -- Update canvas size
+    ListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        SoundListContainer.CanvasSize = UDim2.new(0, 0, 0, ListLayout.AbsoluteContentSize.Y)
+    end)
+    
+    -- Close button functionality
+    CloseBtn.MouseButton1Click:Connect(function()
+        MusicPanel.Visible = false
+    end)
+    
+    return MusicPanel
+end
+
+-- Main Window Creation
+function OrionLib:MakeWindow(WindowConfig)
+    local FirstTab = true
+    local Minimized = false
+    
+    WindowConfig = WindowConfig or {}
+    WindowConfig.Name = WindowConfig.Name or "Orion Library"
+    WindowConfig.ConfigFolder = WindowConfig.ConfigFolder or WindowConfig.Name
+    WindowConfig.SaveConfig = WindowConfig.SaveConfig or false
+    WindowConfig.Horizontal = WindowConfig.Horizontal or OrionLib.Config.Horizontal
+    WindowConfig.XSize = WindowConfig.XSize or OrionLib.Config.XSize
+    WindowConfig.YSize = WindowConfig.YSize or OrionLib.Config.YSize
+    WindowConfig.Music = WindowConfig.Music or OrionLib.Config.Music
+    
+    -- Update config
+    OrionLib.Config.Horizontal = WindowConfig.Horizontal
+    OrionLib.Config.XSize = WindowConfig.XSize
+    OrionLib.Config.YSize = WindowConfig.YSize
+    OrionLib.Config.Music = WindowConfig.Music
+    
+    OrionLib.Folder = WindowConfig.ConfigFolder
+    OrionLib.SaveCfg = WindowConfig.SaveConfig
+    
+    -- Create main window
+    local MainWindow = Create("Frame", {
+        Name = "MainWindow",
+        Size = UDim2.new(0, WindowConfig.XSize, 0, WindowConfig.YSize),
+        Position = UDim2.new(0.5, -WindowConfig.XSize/2, 0.5, -WindowConfig.YSize/2),
+        BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Main,
+        BorderSizePixel = 0,
+        Parent = Orion
+    })
+    
+    local MainCorner = Create("UICorner", {CornerRadius = UDim.new(0, 12)})
+    MainCorner.Parent = MainWindow
+    
+    local MainStroke = Create("UIStroke", {
+        Color = OrionLib.Themes[OrionLib.SelectedTheme].Stroke,
+        Thickness = 1
+    })
+    MainStroke.Parent = MainWindow
+    
+    -- Top Bar
+    local TopBar = Create("Frame", {
+        Name = "TopBar",
+        Size = UDim2.new(1, 0, 0, 40),
+        BackgroundTransparency = 1,
+        Parent = MainWindow
+    })
+    
+    local WindowName = Create("TextLabel", {
+        Text = WindowConfig.Name,
+        Size = UDim2.new(1, -80, 1, 0),
+        Position = UDim2.new(0, 15, 0, 0),
+        BackgroundTransparency = 1,
+        TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text,
+        Font = Enum.Font.GothamBold,
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = TopBar
+    })
+    
+    -- Control Buttons Container
+    local ControlsContainer = Create("Frame", {
+        Size = UDim2.new(0, 70, 0, 25),
+        Position = UDim2.new(1, -75, 0, 7),
+        BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Second,
+        BorderSizePixel = 0,
+        Parent = TopBar
+    })
+    
+    local ControlsCorner = Create("UICorner", {CornerRadius = UDim.new(0, 6)})
+    ControlsCorner.Parent = ControlsContainer
+    
+    local ControlsStroke = Create("UIStroke", {
+        Color = OrionLib.Themes[OrionLib.SelectedTheme].Stroke,
+        Thickness = 1
+    })
+    ControlsStroke.Parent = ControlsContainer
+    
+    -- Music Button (if enabled)
+    local MusicPanel = nil
+    if WindowConfig.Music then
+        MusicPanel = CreateMusicPanel(MainWindow)
+        
+        local MusicBtn = Create("TextButton", {
+            Text = "♪",
+            Size = UDim2.new(0, 25, 0, 25),
+            Position = UDim2.new(1, -105, 0, 7),
+            BackgroundColor3 = Color3.fromRGB(100, 50, 200),
+            TextColor3 = Color3.fromRGB(255, 255, 255),
+            Font = Enum.Font.GothamBold,
+            TextSize = 16,
+            BorderSizePixel = 0,
+            Parent = TopBar
+        })
+        
+        local MusicCorner = Create("UICorner", {CornerRadius = UDim.new(0, 6)})
+        MusicCorner.Parent = MusicBtn
+        
+        MusicBtn.MouseButton1Click:Connect(function()
+            MusicPanel.Visible = not MusicPanel.Visible
+        end)
+        
+        MusicBtn.MouseEnter:Connect(function()
+            TweenService:Create(MusicBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(120, 70, 220)}):Play()
+        end)
+        
+        MusicBtn.MouseLeave:Connect(function()
+            TweenService:Create(MusicBtn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(100, 50, 200)}):Play()
+        end)
+    end
+    
+    -- Minimize Button
+    local MinimizeBtn = Create("TextButton", {
+        Text = "−",
+        Size = UDim2.new(0, 35, 0, 25),
+        BackgroundTransparency = 1,
+        TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text,
+        Font = Enum.Font.GothamBold,
+        TextSize = 16,
+        BorderSizePixel = 0,
+        Parent = ControlsContainer
+    })
+    
+    -- Close Button
+    local CloseBtn = Create("TextButton", {
+        Text = "×",
+        Size = UDim2.new(0, 35, 0, 25),
+        Position = UDim2.new(0, 35, 0, 0),
+        BackgroundTransparency = 1,
+        TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text,
+        Font = Enum.Font.GothamBold,
+        TextSize = 16,
+        BorderSizePixel = 0,
+        Parent = ControlsContainer
+    })
+    
+    -- Tab Container
+    local TabContainer = Create("Frame", {
+        Name = "TabContainer",
+        Size = WindowConfig.Horizontal and UDim2.new(1, 0, 0, 45) or UDim2.new(0, 150, 1, -40),
+        Position = WindowConfig.Horizontal and UDim2.new(0, 0, 0, 40) or UDim2.new(0, 0, 0, 40),
+        BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Second,
+        BorderSizePixel = 0,
+        Parent = MainWindow
+    })
+    
+    local TabLayout = WindowConfig.Horizontal and MakeElement("HorizontalList") or MakeElement("VerticalList")
+    TabLayout.Parent = TabContainer
+    
+    local TabPadding = MakeElement("Padding", 8, 8, 8, 8)
+    TabPadding.Parent = TabContainer
+    
+    -- Content Container
+    local ContentContainer = Create("Frame", {
+        Name = "ContentContainer",
+        Size = WindowConfig.Horizontal and UDim2.new(1, 0, 1, -85) or UDim2.new(1, -150, 1, -40),
+        Position = WindowConfig.Horizontal and UDim2.new(0, 0, 0, 85) or UDim2.new(0, 150, 0, 40),
+        BackgroundTransparency = 1,
+        Parent = MainWindow
+    })
+    
+    -- Add dragging functionality
+    AddDraggingFunctionality(TopBar, MainWindow)
+    
+    -- Button events
+    CloseBtn.MouseButton1Click:Connect(function()
+        Orion:Destroy()
+    end)
+    
+    MinimizeBtn.MouseButton1Click:Connect(function()
+        if Minimized then
+            MainWindow.Size = UDim2.new(0, WindowConfig.XSize, 0, WindowConfig.YSize)
+            MinimizeBtn.Text = "−"
+            TabContainer.Visible = true
+            if MusicPanel then MusicPanel.Visible = false end
+        else
+            MainWindow.Size = UDim2.new(0, math.max(250, WindowName.TextBounds.X + 100), 0, 40)
+            MinimizeBtn.Text = "+"
+            TabContainer.Visible = false
+            if MusicPanel then MusicPanel.Visible = false end
+        end
+        Minimized = not Minimized
+    end)
+    
+    -- Tab Functions
+    local TabFunction = {}
+    function TabFunction:MakeTab(TabConfig)
+        TabConfig = TabConfig or {}
+        TabConfig.Name = TabConfig.Name or "Tab"
+        TabConfig.Icon = TabConfig.Icon or ""
+        
+        local TabBtn = Create("TextButton", {
+            Text = TabConfig.Name,
+            Size = WindowConfig.Horizontal and UDim2.new(0, 100, 1, 0) or UDim2.new(1, 0, 0, 35),
+            BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Main,
+            TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].TextDark,
+            Font = Enum.Font.Gotham,
+            TextSize = 14,
+            BorderSizePixel = 0,
+            Parent = TabContainer
+        })
+        
+        local TabCorner = Create("UICorner", {CornerRadius = UDim.new(0, 6)})
+        TabCorner.Parent = TabBtn
+        
+        local TabContent = Create("ScrollingFrame", {
+            Name = "TabContent",
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            ScrollBarThickness = 4,
+            Visible = false,
+            Parent = ContentContainer
+        })
+        
+        local ContentLayout = MakeElement("List")
+        ContentLayout.Parent = TabContent
+        
+        local ContentPadding = MakeElement("Padding", 10, 10, 10, 10)
+        ContentPadding.Parent = TabContent
+        
+        if FirstTab then
+            FirstTab = false
+            TabBtn.BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Second
+            TabBtn.TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text
+            TabContent.Visible = true
+        end
+        
+        TabBtn.MouseButton1Click:Connect(function()
+            for _, tab in pairs(TabContainer:GetChildren()) do
+                if tab:IsA("TextButton") then
+                    tab.BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Main
+                    tab.TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].TextDark
+                end
+            end
+            
+            for _, content in pairs(ContentContainer:GetChildren()) do
+                if content.Name == "TabContent" then
+                    content.Visible = false
+                end
+            end
+            
+            TabBtn.BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Second
+            TabBtn.TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text
+            TabContent.Visible = true
+        end)
+        
+        -- Tab Elements
+        local TabElements = {}
+        
+        function TabElements:AddButton(ButtonConfig)
+            ButtonConfig = ButtonConfig or {}
+            ButtonConfig.Name = ButtonConfig.Name or "Button"
+            ButtonConfig.Callback = ButtonConfig.Callback or function() end
+            
+            local Button = Create("TextButton", {
+                Text = ButtonConfig.Name,
+                Size = UDim2.new(1, 0, 0, 35),
+                BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Second,
+                TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text,
+                Font = Enum.Font.Gotham,
+                TextSize = 14,
+                BorderSizePixel = 0,
+                Parent = TabContent
+            })
+            
+            local ButtonCorner = Create("UICorner", {CornerRadius = UDim.new(0, 6)})
+            ButtonCorner.Parent = Button
+            
+            Button.MouseButton1Click:Connect(function()
+                ButtonConfig.Callback()
+            end)
+            
+            Button.MouseEnter:Connect(function()
+                TweenService:Create(Button, TweenInfo.new(0.2), {
+                    BackgroundColor3 = Color3.fromRGB(
+                        OrionLib.Themes[OrionLib.SelectedTheme].Second.R * 255 + 10,
+                        OrionLib.Themes[OrionLib.SelectedTheme].Second.G * 255 + 10,
+                        OrionLib.Themes[OrionLib.SelectedTheme].Second.B * 255 + 10
+                    )
+                }):Play()
+            end)
+            
+            Button.MouseLeave:Connect(function()
+                TweenService:Create(Button, TweenInfo.new(0.2), {
+                    BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Second
+                }):Play()
+            end)
+            
+            return Button
+        end
+        
+        function TabElements:AddLabel(Text)
+            local Label = Create("TextLabel", {
+                Text = Text or "Label",
+                Size = UDim2.new(1, 0, 0, 25),
+                BackgroundTransparency = 1,
+                TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text,
+                Font = Enum.Font.Gotham,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = TabContent
+            })
+            
+            return Label
+        end
+        
+        function TabElements:AddToggle(ToggleConfig)
+            ToggleConfig = ToggleConfig or {}
+            ToggleConfig.Name = ToggleConfig.Name or "Toggle"
+            ToggleConfig.Default = ToggleConfig.Default or false
+            ToggleConfig.Callback = ToggleConfig.Callback or function() end
+            
+            local Toggle = {Value = ToggleConfig.Default}
+            
+            local ToggleFrame = Create("Frame", {
+                Size = UDim2.new(1, 0, 0, 35),
+                BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Second,
+                BorderSizePixel = 0,
+                Parent = TabContent
+            })
+            
+            local ToggleCorner = Create("UICorner", {CornerRadius = UDim.new(0, 6)})
+            ToggleCorner.Parent = ToggleFrame
+            
+            local ToggleLabel = Create("TextLabel", {
+                Text = ToggleConfig.Name,
+                Size = UDim2.new(1, -60, 1, 0),
+                Position = UDim2.new(0, 10, 0, 0),
+                BackgroundTransparency = 1,
+                TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text,
+                Font = Enum.Font.Gotham,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = ToggleFrame
+            })
+            
+            local ToggleButton = Create("TextButton", {
+                Text = Toggle.Value and "ON" or "OFF",
+                Size = UDim2.new(0, 40, 0, 20),
+                Position = UDim2.new(1, -50, 0.5, -10),
+                BackgroundColor3 = Toggle.Value and Color3.fromRGB(50, 200, 50) or Color3.fromRGB(200, 50, 50),
+                TextColor3 = Color3.fromRGB(255, 255, 255),
+                Font = Enum.Font.GothamBold,
+                TextSize = 12,
+                BorderSizePixel = 0,
+                Parent = ToggleFrame
+            })
+            
+            local ToggleBtnCorner = Create("UICorner", {CornerRadius = UDim.new(0, 4)})
+            ToggleBtnCorner.Parent = ToggleButton
+            
+            function Toggle:Set(Value)
+                Toggle.Value = Value
+                ToggleButton.Text = Value and "ON" or "OFF"
+                TweenService:Create(ToggleButton, TweenInfo.new(0.2), {
+                    BackgroundColor3 = Value and Color3.fromRGB(50, 200, 50) or Color3.fromRGB(200, 50, 50)
+                }):Play()
+                ToggleConfig.Callback(Value)
+            end
+            
+            ToggleButton.MouseButton1Click:Connect(function()
+                Toggle:Set(not Toggle.Value)
+            end)
+            
+            Toggle:Set(Toggle.Value)
+            return Toggle
+        end
+        
+        function TabElements:AddSlider(SliderConfig)
+            SliderConfig = SliderConfig or {}
+            SliderConfig.Name = SliderConfig.Name or "Slider"
+            SliderConfig.Min = SliderConfig.Min or 0
+            SliderConfig.Max = SliderConfig.Max or 100
+            SliderConfig.Default = SliderConfig.Default or 50
+            SliderConfig.Callback = SliderConfig.Callback or function() end
+            
+            local Slider = {Value = SliderConfig.Default}
+            local Dragging = false
+            
+            local SliderFrame = Create("Frame", {
+                Size = UDim2.new(1, 0, 0, 50),
+                BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Second,
+                BorderSizePixel = 0,
+                Parent = TabContent
+            })
+            
+            local SliderCorner = Create("UICorner", {CornerRadius = UDim.new(0, 6)})
+            SliderCorner.Parent = SliderFrame
+            
+            local SliderLabel = Create("TextLabel", {
+                Text = SliderConfig.Name,
+                Size = UDim2.new(1, 0, 0, 20),
+                Position = UDim2.new(0, 10, 0, 5),
+                BackgroundTransparency = 1,
+                TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text,
+                Font = Enum.Font.Gotham,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = SliderFrame
+            })
+            
+            local SliderBar = Create("Frame", {
+                Size = UDim2.new(1, -20, 0, 4),
+                Position = UDim2.new(0, 10, 0, 30),
+                BackgroundColor3 = Color3.fromRGB(60, 60, 60),
+                BorderSizePixel = 0,
+                Parent = SliderFrame
+            })
+            
+            local SliderBarCorner = Create("UICorner", {CornerRadius = UDim.new(0, 2)})
+            SliderBarCorner.Parent = SliderBar
+            
+            local SliderFill = Create("Frame", {
+                Size = UDim2.new(0.5, 0, 1, 0),
+                Position = UDim2.new(0, 0, 0, 0),
+                BackgroundColor3 = Color3.fromRGB(100, 200, 255),
+                BorderSizePixel = 0,
+                Parent = SliderBar
+            })
+            
+            local SliderFillCorner = Create("UICorner", {CornerRadius = UDim.new(0, 2)})
+            SliderFillCorner.Parent = SliderFill
+            
+            local SliderKnob = Create("Frame", {
+                Size = UDim2.new(0, 12, 0, 12),
+                Position = UDim2.new(0.5, -6, 0.5, -6),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BorderSizePixel = 0,
+                Parent = SliderBar
+            })
+            
+            local SliderKnobCorner = Create("UICorner", {CornerRadius = UDim.new(1, 0)})
+            SliderKnobCorner.Parent = SliderKnob
+            
+            local ValueLabel = Create("TextLabel", {
+                Text = tostring(Slider.Value),
+                Size = UDim2.new(0, 50, 0, 20),
+                Position = UDim2.new(1, -60, 0, 5),
+                BackgroundTransparency = 1,
+                TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text,
+                Font = Enum.Font.Gotham,
+                TextSize = 12,
+                TextXAlignment = Enum.TextXAlignment.Right,
+                Parent = SliderFrame
+            })
+            
+            function Slider:Set(Value)
+                Slider.Value = math.clamp(Value, SliderConfig.Min, SliderConfig.Max)
+                local percent = (Slider.Value - SliderConfig.Min) / (SliderConfig.Max - SliderConfig.Min)
+                
+                TweenService:Create(SliderFill, TweenInfo.new(0.1), {Size = UDim2.new(percent, 0, 1, 0)}):Play()
+                TweenService:Create(SliderKnob, TweenInfo.new(0.1), {Position = UDim2.new(percent, -6, 0.5, -6)}):Play()
+                
+                ValueLabel.Text = tostring(Slider.Value)
+                SliderConfig.Callback(Slider.Value)
+            end
+            
+            SliderKnob.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                    Dragging = true
+                end
+            end)
+            
+            SliderKnob.InputEnded:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                    Dragging = false
+                end
+            end)
+            
+            UserInputService.InputChanged:Connect(function(input)
+                if Dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                    local abs = SliderBar.AbsolutePosition
+                    local size = SliderBar.AbsoluteSize.X
+                    local rel = math.clamp((input.Position.X - abs.X) / size, 0, 1)
+                    
+                    local value = SliderConfig.Min + ((SliderConfig.Max - SliderConfig.Min) * rel)
+                    Slider:Set(math.floor(value))
+                end
+            end)
+            
+            Slider:Set(Slider.Value)
+            return Slider
+        end
+        
+        function TabElements:AddDropdown(DropdownConfig)
+            DropdownConfig = DropdownConfig or {}
+            DropdownConfig.Name = DropdownConfig.Name or "Dropdown"
+            DropdownConfig.Options = DropdownConfig.Options or {}
+            DropdownConfig.Default = DropdownConfig.Default or ""
+            DropdownConfig.Callback = DropdownConfig.Callback or function() end
+            
+            local Dropdown = {Value = DropdownConfig.Default, Open = false}
+            
+            local DropdownFrame = Create("Frame", {
+                Size = UDim2.new(1, 0, 0, 35),
+                BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Second,
+                BorderSizePixel = 0,
+                Parent = TabContent
+            })
+            
+            local DropdownCorner = Create("UICorner", {CornerRadius = UDim.new(0, 6)})
+            DropdownCorner.Parent = DropdownFrame
+            
+            local DropdownButton = Create("TextButton", {
+                Text = DropdownConfig.Name .. ": " .. Dropdown.Value,
+                Size = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = 1,
+                TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text,
+                Font = Enum.Font.Gotham,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = DropdownFrame
+            })
+            
+            local DropdownPadding = Create("UIPadding", {
+                PaddingLeft = UDim.new(0, 10),
+                PaddingRight = UDim.new(0, 10),
+                Parent = DropdownButton
+            })
+            
+            local OptionsContainer = Create("Frame", {
+                Size = UDim2.new(1, 0, 0, 0),
+                Position = UDim2.new(0, 0, 1, 0),
+                BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Main,
+                BorderSizePixel = 0,
+                Visible = false,
+                Parent = DropdownFrame
+            })
+            
+            local OptionsCorner = Create("UICorner", {CornerRadius = UDim.new(0, 6)})
+            OptionsCorner.Parent = OptionsContainer
+            
+            local OptionsLayout = Create("UIListLayout", {
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Parent = OptionsContainer
+            })
+            
+            function Dropdown:Set(Value)
+                Dropdown.Value = Value
+                DropdownButton.Text = DropdownConfig.Name .. ": " .. Value
+                DropdownConfig.Callback(Value)
+            end
+            
+            function Dropdown:Refresh(Options)
+                for _, child in pairs(OptionsContainer:GetChildren()) do
+                    if child:IsA("TextButton") then
+                        child:Destroy()
+                    end
+                end
+                
+                for _, option in pairs(Options) do
+                    local OptionButton = Create("TextButton", {
+                        Text = option,
+                        Size = UDim2.new(1, 0, 0, 25),
+                        BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Second,
+                        TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text,
+                        Font = Enum.Font.Gotham,
+                        TextSize = 12,
+                        BorderSizePixel = 0,
+                        Parent = OptionsContainer
+                    })
+                    
+                    local OptionPadding = Create("UIPadding", {
+                        PaddingLeft = UDim.new(0, 10),
+                        Parent = OptionButton
+                    })
+                    
+                    OptionButton.MouseButton1Click:Connect(function()
+                        Dropdown:Set(option)
+                        Dropdown.Open = false
+                        OptionsContainer.Visible = false
+                        TweenService:Create(DropdownFrame, TweenInfo.new(0.2), {Size = UDim2.new(1, 0, 0, 35)}):Play()
+                    end)
+                    
+                    OptionButton.MouseEnter:Connect(function()
+                        TweenService:Create(OptionButton, TweenInfo.new(0.1), {
+                            BackgroundColor3 = Color3.fromRGB(
+                                OrionLib.Themes[OrionLib.SelectedTheme].Second.R * 255 + 10,
+                                OrionLib.Themes[OrionLib.SelectedTheme].Second.G * 255 + 10,
+                                OrionLib.Themes[OrionLib.SelectedTheme].Second.B * 255 + 10
+                            )
+                        }):Play()
+                    end)
+                    
+                    OptionButton.MouseLeave:Connect(function()
+                        TweenService:Create(OptionButton, TweenInfo.new(0.1), {
+                            BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Second
+                        }):Play()
+                    end)
+                end
+                
+                OptionsContainer.Size = UDim2.new(1, 0, 0, #Options * 25)
+            end
+            
+            DropdownButton.MouseButton1Click:Connect(function()
+                Dropdown.Open = not Dropdown.Open
+                OptionsContainer.Visible = Dropdown.Open
+                
+                if Dropdown.Open then
+                    TweenService:Create(DropdownFrame, TweenInfo.new(0.2), {Size = UDim2.new(1, 0, 0, 35 + (#DropdownConfig.Options * 25))}):Play()
+                else
+                    TweenService:Create(DropdownFrame, TweenInfo.new(0.2), {Size = UDim2.new(1, 0, 0, 35)}):Play()
+                end
+            end)
+            
+            Dropdown:Refresh(DropdownConfig.Options)
+            Dropdown:Set(Dropdown.Value)
+            
+            return Dropdown
+        end
+        
+        function TabElements:AddColorpicker(ColorpickerConfig)
+            ColorpickerConfig = ColorpickerConfig or {}
+            ColorpickerConfig.Name = ColorpickerConfig.Name or "Colorpicker"
+            ColorpickerConfig.Default = ColorpickerConfig.Default or Color3.fromRGB(255, 255, 255)
+            ColorpickerConfig.Callback = ColorpickerConfig.Callback or function() end
+            
+            local Colorpicker = {Value = ColorpickerConfig.Default}
+            
+            local ColorpickerFrame = Create("Frame", {
+                Size = UDim2.new(1, 0, 0, 35),
+                BackgroundColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Second,
+                BorderSizePixel = 0,
+                Parent = TabContent
+            })
+            
+            local ColorpickerCorner = Create("UICorner", {CornerRadius = UDim.new(0, 6)})
+            ColorpickerCorner.Parent = ColorpickerFrame
+            
+            local ColorpickerLabel = Create("TextLabel", {
+                Text = ColorpickerConfig.Name,
+                Size = UDim2.new(1, -50, 1, 0),
+                Position = UDim2.new(0, 10, 0, 0),
+                BackgroundTransparency = 1,
+                TextColor3 = OrionLib.Themes[OrionLib.SelectedTheme].Text,
+                Font = Enum.Font.Gotham,
+                TextSize = 14,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = ColorpickerFrame
+            })
+            
+            local ColorDisplay = Create("Frame", {
+                Size = UDim2.new(0, 30, 0, 20),
+                Position = UDim2.new(1, -40, 0.5, -10),
+                BackgroundColor3 = Colorpicker.Value,
+                BorderSizePixel = 0,
+                Parent = ColorpickerFrame
+            })
+            
+            local ColorDisplayCorner = Create("UICorner", {CornerRadius = UDim.new(0, 4)})
+            ColorDisplayCorner.Parent = ColorDisplay
+            
+            function Colorpicker:Set(Color)
+                Colorpicker.Value = Color
+                ColorDisplay.BackgroundColor3 = Color
+                ColorpickerConfig.Callback(Color)
+            end
+            
+            ColorDisplay.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                    -- Simple color picker - cycles through preset colors
+                    local colors = {
+                        Color3.fromRGB(255, 0, 0),
+                        Color3.fromRGB(0, 255, 0),
+                        Color3.fromRGB(0, 0, 255),
+                        Color3.fromRGB(255, 255, 0),
+                        Color3.fromRGB(255, 0, 255),
+                        Color3.fromRGB(0, 255, 255),
+                        Color3.fromRGB(255, 255, 255)
+                    }
+                    
+                    local currentIndex = 1
+                    for i, color in pairs(colors) do
+                        if color == Colorpicker.Value then
+                            currentIndex = i
+                            break
+                        end
+                    end
+                    
+                    local nextIndex = (currentIndex % #colors) + 1
+                    Colorpicker:Set(colors[nextIndex])
+                end
+            end)
+            
+            return Colorpicker
+        end
+        
+        -- Update canvas size
+        ContentLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            TabContent.CanvasSize = UDim2.new(0, 0, 0, ContentLayout.AbsoluteContentSize.Y + 20)
+        end)
+        
+        return TabElements
+    end
+    
+    return TabFunction
+end
+
+-- Music system update loop
+spawn(function()
+    while true do
+        wait(1)
+        if OrionLib.MusicSystem.currentSound then
+            if not OrionLib.MusicSystem.currentSound.IsPlaying and OrionLib.MusicSystem.isPlaying then
+                OrionLib.MusicSystem.isPlaying = false
+            end
+        end
+    end
+end)
+
+return OrionLib
